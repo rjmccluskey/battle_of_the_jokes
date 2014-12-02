@@ -1,37 +1,93 @@
 require 'csv'
 
 class JokeList #model
-  def initialize
-    @jokes = []
+  attr_accessor :jokes
+
+  def initialize(jokes = [])
+    @jokes = jokes
     @headers = []
+    initialize_ids
   end
 
-  def add_joke(string_array, wins=0, battles=0)
-    p string_array[0]
-    @jokes << Joke.new(joke_string: string_array[0], wins: wins, battles: battles)
+  def initialize_ids
+    jokes_with_no_id = @jokes.select{|joke| joke.id == nil}
+    jokes_with_no_id.each {|joke| joke.id = next_id}
+  end
+
+  def next_id
+    next_id = -1
+    initialized_jokes = @jokes.select{|joke| joke.id != nil}
+    next_id = initialized_jokes.max_by{|joke| joke.id}.id if initialized_jokes != []
+    # @jokes.each{|joke| next_id = joke.id if joke.id > next_id}
+    next_id += 1
   end
 
   def start_joke_battle
-    return_pair = View.vote(select_for_joke_battle)
+    return_pair = View.vote(select_jokes_for_battle)
     update_rankings(return_pair[0],return_pair[1]) unless return_pair.nil?
-    kill_bad_jokes
   end
 
-  def select_for_joke_battle
-    alive_jokes.sample(2)
+  def select_jokes_for_battle
+
+    battle_range = 200
+
+    joke_type = [:alive,:battle_free].sample
+
+    joke_for_battle = get_jokes(joke_type).sample
+    joke_for_battle = get_jokes(:id,"17") TODO - remove this after testing specific id
+    joke_for_battle = get_jokes(:alive).sample if joke_for_battle.nil?
+
+
+    eligible_opponents = get_jokes(:all).select do |joke|
+      joke.ranking > joke_for_battle.ranking - battle_range &&
+      joke.ranking < joke_for_battle.ranking + battle_range
+    end
+
+    while eligible_opponents.size < 5
+      # puts "expanding range..."
+      battle_range += 50
+      eligible_opponents = get_jokes(:alive).select do |joke|
+        joke.ranking > joke_for_battle.ranking - battle_range &&
+        joke.ranking < joke_for_battle.ranking + battle_range
+      end
+    end
+
+    opponent = eligible_opponents.sample
+
+    while opponent == joke_for_battle
+      opponent = eligible_opponents.sample
+    end
+
+    # puts "#{joke_type}"
+    # puts "joke1: #{joke_for_battle} #{joke_for_battle.ranking}"
+    # puts "joke2: #{opponent} #{joke_for_battle.ranking}"
+    # View.user_pause
+
+    return [joke_for_battle,opponent].shuffle
   end
 
-  def alive_jokes
-    @jokes.select { |joke| joke.dead == false }
-  end
+  def get_jokes(type, *args)
 
-  def dead_jokes
-    @jokes.select { |joke| joke.dead == true }
+    # puts "args #{args}"
+
+    case type
+    when :alive       then return @jokes.select { |joke| joke.dead == false && joke.immortal == false}
+    when :dead        then return @jokes.select { |joke| joke.dead == true }
+    when :immortal    then return @jokes.select { |joke| joke.immortal == true}
+    when :battle_free then return @jokes.select { |joke| joke.battles == 0}
+    when :all         then return @jokes
+    when :id          then return @jokes.select { |joke| joke.id == args[0]}.first
+    end
   end
 
   def kill_bad_jokes
-    jokes_to_kill = @jokes.select{ |joke| joke.battles > 10 && joke.ranking < 300}
+    jokes_to_kill = @jokes.select{ |joke| joke.battles > 10 && joke.ranking < 400}
     jokes_to_kill.each { |joke| joke.dead = true }
+  end
+
+  def immortalize_good_jokes
+    jokes_to_immortalize = @jokes.select{ |joke| joke.battles > 10 && joke.ranking > 1200}
+    jokes_to_immortalize.each { |joke| joke.immortal = true }
   end
 
   def update_rankings(winner,loser)
@@ -46,23 +102,26 @@ class JokeList #model
 
     #update winner
     winner.wins += 1
+
     winner.battles += 1
-    winner.sum_of_opponents_ranking += loser.ranking
-    winner.ranking = winner.ranking + winner.kfact * (1 - e_winner)
+    winner.ranking += winner.kfact * (1 - e_winner)
     winner.ranking = 100.0 if winner.ranking < 100
+    winner.opponent_ids << loser.id
 
     #update loser
     loser.battles += 1
-    loser.sum_of_opponents_ranking += loser.ranking
-    loser.ranking = loser.ranking + loser.kfact * (0 - e_loser)
+    loser.ranking += - loser.kfact * e_loser
     loser.ranking = 100.0 if loser.ranking < 100
+    loser.opponent_ids << winner.id
 
     puts "\nNew winner ranking: #{winner.ranking}"
     puts "New loser ranking: #{loser.ranking}"
 
     #sort list
     sort!
-    pause
+    kill_bad_jokes
+    immortalize_good_jokes
+    View.user_pause
   end
 
   def calc_q(joke)
@@ -70,45 +129,62 @@ class JokeList #model
   end
 
   def sort!
-    @jokes = @jokes.sort_by! {|joke| joke.ranking}.reverse
-  end
-
-  def set_list(list)    #only ran when loaded
-    @jokes = list
-  end
-
-  def get_list
-    @jokes
+    @jokes = @jokes.sort_by! {|joke| -joke.ranking}
   end
 
   def print_jokes
     sort!
-    puts "Top jokes:"
-    alive_jokes.each_with_index {|joke, index| puts "#{index+1}. #{joke} [ranking: #{joke.ranking.round(2)}, wins: #{joke.wins}, battles: #{joke.battles}]"}
 
-    puts "\nDead jokes:" if dead_jokes != []
-    dead_jokes.each_with_index {|joke, index| puts "#{index+1}. #{joke} [ranking: #{joke.ranking.round(2)}, wins: #{joke.wins}, battles: #{joke.battles}]"}
-    pause
-  end
+    kill_bad_jokes
+    immortalize_good_jokes
 
-  def pause
-    puts "\nPress ENTER to continue..."
-    gets.chomp
+    jokes_order = [:immortal, :alive, :dead, :battle_free]
+
+    View.clear_screen
+
+    jokes_order.each do |list|
+
+      if get_jokes(list).size > 0
+        puts "#{list.capitalize} jokes:"
+        get_jokes(list).each_with_index {|joke, index| puts "#{index+1}. #{joke} [rank: #{joke.ranking.round(2)}, #{joke.wins}/#{joke.battles}]"}
+        puts
+      end
+    end
+
+    View.user_pause
   end
 end
 
 
 class Joke
-  attr_accessor :joke_string, :wins, :battles, :ranking, :sum_of_opponents_ranking, :kfact, :dead
+  attr_accessor :id, :joke_string, :wins, :battles, :ranking, :dead, :immortal, :opponent_ids
 
   def initialize(args = {})
-    @joke_string = args.fetch(:joke_string, '')
-    @wins = args.fetch(:wins, 0).to_i
-    @battles = args.fetch(:battles, 0).to_i
-    @ranking = args.fetch(:ranking, 100).to_f
-    @sum_of_opponents_ranking = args.fetch(:sum_of_opponents_ranking, 0).to_f
-    @dead = args.fetch(:dead, false) == "true"
-    @kfact = 800.0 / (1 + @battles)
+    @id                     = args.fetch(:id, nil)
+    @joke_string            = args.fetch(:joke_string, "")
+    @wins                   = args.fetch(:wins, 0).to_i
+    @battles                = args.fetch(:battles, 0).to_i
+    @ranking                = args.fetch(:ranking, 800).to_f
+    @dead                   = args.fetch(:dead, false) == "true"
+    @immortal               = args.fetch(:immortal, false) == "true"
+    @opponent_ids           = [] #= args.fetch(:opponent_ids, [])
+  end
+
+  def get(sym)
+    case sym
+    when :id then return @id
+    when :joke_string then return @joke_string
+    when :wins then return @wins
+    when :battles then return @battles
+    when :ranking then return @ranking
+    when :dead then return @dead
+    when :immortal then return @immortal
+    when :opponent_ids then return @opponent_ids
+    end
+  end
+
+  def kfact
+    800.0 / @battles.to_f
   end
 
   def to_s
@@ -124,29 +200,37 @@ class CSVParser
 
   def load_jokes
     jokes = []
-    @headers = @csv.shift.map &:to_sym
+    @headers = @csv.shift.map {|x| x.to_sym}
+    # p @headers
+
     reset = false # if true, resets all jokes
+
+    TODO - load array from file
 
     @csv.each do |line|
 
-      if line.size == @headers.size && !reset
-        joke_args = Hash[@headers.zip(line)]
-      else
-        p joke_args = {joke_string: line[0]}
-      end
+      # p line
+
+      joke_args = Hash[@headers.zip(line)]
+      joke_args = {id: joke_args[:id], joke_string: joke_args[:joke_string]} if reset
 
       jokes << Joke.new(joke_args)
     end
 
-    return jokes
+    # sleep (5)
+    jokes
   end
 
   def save_jokes(jokes)
-    CSV.open(@filename, "w") do |csv|
+    CSV.open(@filename, "w") do |line|
 
-      csv << @headers
+      line << @headers
+
       jokes.each do |joke|
-        csv << [joke.joke_string, joke.wins.to_s, joke.battles.to_s, joke.ranking.to_s, joke.sum_of_opponents_ranking.to_s, joke.dead.to_s]
+        new_line = []
+        @headers.each {|heading| new_line << joke.get(heading) }
+        line << new_line
+        # line << [joke.joke_string, joke.id, joke.wins, joke.battles, joke.ranking, joke.dead, joke.immortal, joke.opponent_ids]
       end
     end
   end
